@@ -101,11 +101,10 @@ if st.session_state.page == "home":
 
 elif st.session_state.page == "prenota":
     if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
-    st.title("📱 Controllo Rapido e Prenotazione")
+    st.title("📱 Controllo Rapidissimo e Prenotazione")
     
     veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili)
     
-    # Recupera dinamicamente Proprietario (Azienda) e Assegnatario dal database completo
     proprietario_azienda = "Non specificato"
     utilizzatore_abituale = "Non specificato"
     for ditta, lista_mezzi in fleet_db.items():
@@ -114,7 +113,6 @@ elif st.session_state.page == "prenota":
                 proprietario_azienda = ditta
                 utilizzatore_abituale = m["assegnato"]
                 
-    # Visualizzazione chiara dei dettagli di identificazione richiesti
     st.warning(f"🏢 **Proprietario (Azienda):** {proprietario_azienda}")
     st.info(f"👤 **Utilizzatore Abituale:** {utilizzatore_abituale}")
     
@@ -161,12 +159,11 @@ elif st.session_state.page == "dashboard":
     giorni_settimana = ["L", "M", "M", "G", "V", "S", "D"]
     giorni_lista = []
     for i in range(1, num_giorni + 1):
-        sigla =超 giorni_settimana[calendar.weekday(anno, m_idx, i)]
+        sigla = giorni_settimana[calendar.weekday(anno, m_idx, i)]
         giorni_lista.append(f"{i:02d}/{m_idx:02d} (🔴 DOM)" if sigla == "D" else f"{i:02d}/{m_idx:02d} ({sigla})")
         
     df_db = query_mese_cloud(f"{mese_nome}_{anno}", giorni_lista)
     
-    # Mostra solo i mezzi prenotabili filtrati eventualmente per ditta
     veicoli_da_mostrare = [v for v in mezzi_prenotabili if ditta_sel == "Tutte le ditte" or any(item["mezzo"] == v for item in fleet_db[ditta_sel])]
     df_filtrato = df_db[veicoli_da_mostrare]
     
