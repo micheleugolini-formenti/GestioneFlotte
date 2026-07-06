@@ -7,7 +7,7 @@ from sqlalchemy import text
 # Configurazione della pagina web
 st.set_page_config(page_title="Formenti Fleet Cloud System", layout="wide", page_icon="Vans")
 
-# --- 1. DATABASE COMPLETO "A MAGAZZINO" (Tenuto per sviluppi futuri: bolli, assicurazioni, ecc.) ---
+# --- 1. DATABASE COMPLETO "A MAGAZZINO" ---
 fleet_db = {
     "FORN. IND.LI FORMENTI SRL": [
         {"mezzo": "BMW 650 - EP700LY", "assegnato": "SIG. FORMENTI"},
@@ -43,7 +43,7 @@ fleet_db = {
     ]
 }
 
-# --- 🎯 FILTRO ATTIVO: SOLO I MEZZI PRENOTABILI IN QUESTO MOMENTO ---
+# --- 🎯 FILTRO ATTIVO: SOLO I MEZZI PRENOTABILI ---
 mezzi_prenotabili = [
     "FIORINO - FF362CP",
     "PEUGEOT 208 - FF599PR",
@@ -70,11 +70,12 @@ with conn.session as session:
     """))
     session.commit()
 
-# Funzione per caricare i dati filtrati dal database cloud
+# Funzione per caricare i dati (Aggiunto ttl=0 per aggiornamento istantaneo)
 def query_mese_cloud(chiave_mese, giorni_lista):
     df = pd.DataFrame("", index=giorni_lista, columns=mezzi_prenotabili)
     try:
-        res = conn.query("SELECT riga_giorno, mezzo, tecnico FROM prenotazioni WHERE chiave_mese = :mese", params={"mese": chiave_mese})
+        res = conn.query("SELECT riga_giorno, mezzo, tecnico FROM prenotazioni WHERE chiave_mese = :mese", 
+                         params={"mese": chiave_mese}, ttl=0) # <-- Forza la lettura in tempo reale
         if not res.empty:
             for _, row in res.iterrows():
                 riga = row['riga_giorno']
@@ -91,7 +92,7 @@ if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5.1")
+    st.title("🚐 Formenti Fleet Cloud System v5.2")
     st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
@@ -101,7 +102,7 @@ if st.session_state.page == "home":
 
 elif st.session_state.page == "prenota":
     if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
-    st.title("📱 Controllo Rapidissimo e Prenotazione")
+    st.title("📱 Controllo Rapido e Prenotazione")
     
     veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili)
     
@@ -124,8 +125,9 @@ elif st.session_state.page == "prenota":
     mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
     chiave_mese = f"{mesi_ita[data_sel.month - 1]}_{data_sel.year}"
     
+    # Lettura singola con ttl=0 per evitare cache sullo smartphone
     res_singolo = conn.query("SELECT tecnico FROM prenotazioni WHERE chiave_mese = :mese AND riga_giorno = :riga AND mezzo = :mezzo", 
-                             params={"mese": chiave_mese, "riga": label_riga, "mezzo": veicolo_sel})
+                             params={"mese": chiave_mese, "riga": label_riga, "mezzo": veicolo_sel}, ttl=0)
     stato_attuale = res_singolo.iloc[0]['tecnico'] if not res_singolo.empty else ""
     
     if stato_attuale == "" or pd.isna(stato_attuale):
