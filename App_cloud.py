@@ -43,7 +43,7 @@ fleet_db = {
     ]
 }
 
-# --- 🎯 FILTRO ATTIVO: SOLO I MEZZI PRENOTABILI ---
+# --- 🎯 FILTRO ATTIVO ---
 mezzi_prenotabili = [
     "FIORINO - FF362CP",
     "PEUGEOT 208 - FF599PR",
@@ -57,7 +57,6 @@ except Exception as e:
     st.error("⚠️ Errore di configurazione del Database Cloud!")
     st.stop()
 
-# Creazione tabella prenotazioni se non esiste
 with conn.session as session:
     session.execute(text("""
     CREATE TABLE IF NOT EXISTS prenotazioni (
@@ -70,12 +69,11 @@ with conn.session as session:
     """))
     session.commit()
 
-# Funzione per caricare i dati (Aggiunto ttl=0 per aggiornamento istantaneo)
 def query_mese_cloud(chiave_mese, giorni_lista):
     df = pd.DataFrame("", index=giorni_lista, columns=mezzi_prenotabili)
     try:
         res = conn.query("SELECT riga_giorno, mezzo, tecnico FROM prenotazioni WHERE chiave_mese = :mese", 
-                         params={"mese": chiave_mese}, ttl=0) # <-- Forza la lettura in tempo reale
+                         params={"mese": chiave_mese}, ttl=0)
         if not res.empty:
             for _, row in res.iterrows():
                 riga = row['riga_giorno']
@@ -87,12 +85,27 @@ def query_mese_cloud(chiave_mese, giorni_lista):
         pass
     return df
 
-# --- 3. SISTEMA DI NAVIGAZIONE PAGINE ---
+# --- 🛰️ LETTURA PARAMETRI URL PER QR CODE INTELLIGENTE ---
+default_index = 0
+if "mezzo" in st.query_params:
+    param_mezzo = st.query_params["mezzo"].lower()
+    if "page_redirected" not in st.session_state:
+        st.session_state.page = "prenota"
+        st.session_state.page_redirected = True
+    
+    if "fiorino" in param_mezzo:
+        default_index = 0
+    elif "peugeot" in param_mezzo:
+        default_index = 1
+    elif "clio" in param_mezzo:
+        default_index = 2
+
+# --- 3. NAVIGAZIONE ---
 if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5.2")
+    st.title("🚐 Formenti Fleet Cloud System v5.3")
     st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
@@ -101,10 +114,15 @@ if st.session_state.page == "home":
         if st.button("📊 DASHBOARD PC UFFICIO\n(Tabellone Mensile Completo)", use_container_width=True): nav_to("dashboard"); st.rerun()
 
 elif st.session_state.page == "prenota":
-    if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
+    if st.button("⬅️ Torna al Menu Principale"): 
+        if "page_redirected" in st.session_state: del st.session_state["page_redirected"]
+        st.query_params.clear()
+        nav_to("home")
+        st.rerun()
+        
     st.title("📱 Controllo Rapido e Prenotazione")
     
-    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili)
+    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili, index=default_index)
     
     proprietario_azienda = "Non specificato"
     utilizzatore_abituale = "Non specificato"
@@ -125,7 +143,6 @@ elif st.session_state.page == "prenota":
     mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
     chiave_mese = f"{mesi_ita[data_sel.month - 1]}_{data_sel.year}"
     
-    # Lettura singola con ttl=0 per evitare cache sullo smartphone
     res_singolo = conn.query("SELECT tecnico FROM prenotazioni WHERE chiave_mese = :mese AND riga_giorno = :riga AND mezzo = :mezzo", 
                              params={"mese": chiave_mese, "riga": label_riga, "mezzo": veicolo_sel}, ttl=0)
     stato_attuale = res_singolo.iloc[0]['tecnico'] if not res_singolo.empty else ""
