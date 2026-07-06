@@ -7,7 +7,7 @@ from sqlalchemy import text
 # Configurazione della pagina web
 st.set_page_config(page_title="Formenti Fleet Cloud System", layout="wide", page_icon="Vans")
 
-# --- 1. DATABASE COMPLETO "A MAGAZZINO" ---
+# --- 1. DATABASE COMPLETO "A MAGAZZINO" (Usato come archivio storico e scadenze) ---
 fleet_db = {
     "FORN. IND.LI FORMENTI SRL": [
         {"mezzo": "BMW 650 - EP700LY", "assegnato": "SIG. FORMENTI"},
@@ -43,11 +43,11 @@ fleet_db = {
     ]
 }
 
-# --- 🎯 FILTRO ATTIVO ---
+# --- 🎯 FILTRO ATTIVO: ORA IDENTIFICATI SOLO TRAMITE TARGA ---
 mezzi_prenotabili = [
-    "FIORINO - FF362CP",
-    "PEUGEOT 208 - FF599PR",
-    "CLIO - GW074FB"
+    "FF362CP",  # Fiorino
+    "FF599PR",  # Peugeot
+    "GW074FB"   # Clio
 ]
 
 # --- 2. CONNESSIONE AL DATABASE CLOUD ---
@@ -85,7 +85,7 @@ def query_mese_cloud(chiave_mese, giorni_lista):
         pass
     return df
 
-# --- 🛰️ LETTURA PARAMETRI URL PER QR CODE INTELLIGENTE ---
+# --- 🛰️ PARAMETRI URL PER QR CODE ---
 default_index = 0
 if "mezzo" in st.query_params:
     param_mezzo = st.query_params["mezzo"].lower()
@@ -93,19 +93,16 @@ if "mezzo" in st.query_params:
         st.session_state.page = "prenota"
         st.session_state.page_redirected = True
     
-    if "fiorino" in param_mezzo:
-        default_index = 0
-    elif "peugeot" in param_mezzo:
-        default_index = 1
-    elif "clio" in param_mezzo:
-        default_index = 2
+    if "fiorino" in param_mezzo: default_index = 0
+    elif "peugeot" in param_mezzo: default_index = 1
+    elif "clio" in param_mezzo: default_index = 2
 
 # --- 3. NAVIGAZIONE ---
 if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5.3")
+    st.title("🚐 Formenti Fleet Cloud System v5.4")
     st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
@@ -120,20 +117,26 @@ elif st.session_state.page == "prenota":
         nav_to("home")
         st.rerun()
         
-    st.title("📱 Controllo Rapido e Prenotazione")
+    st.title("📱 Controllo Rapido Targa")
     
-    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili, index=default_index)
+    veicolo_sel = st.selectbox("Seleziona la TARGA del mezzo:", mezzi_prenotabili, index=default_index)
     
+    # Cerca le informazioni estese nel magazzino incrociando la targa
     proprietario_azienda = "Non specificato"
     utilizzatore_abituale = "Non specificato"
+    modello_completo = "Non specificato"
+    
     for ditta, lista_mezzi in fleet_db.items():
         for m in lista_mezzi:
-            if m["mezzo"] == veicolo_sel:
+            if veicolo_sel in m["mezzo"]:  # Trova la corrispondenza della targa nel testo completo
                 proprietario_azienda = ditta
                 utilizzatore_abituale = m["assegnato"]
+                modello_completo = m["mezzo"].split(" - ")[0] # Estrae solo il nome (es. FIORINO)
                 
+    # Visualizzazione dettagliata richiesta
     st.warning(f"🏢 **Proprietario (Azienda):** {proprietario_azienda}")
-    st.info(f"👤 **Utilizzatore Abituale:** {utilizzatore_abituale}")
+    st.info(f"🚐 **Modello Mezzo:** {modello_completo} ({veicolo_sel})")
+    st.success(f"👤 **Utilizzatore Abituale:** {utilizzatore_abituale}")
     
     data_sel = st.date_input("Seleziona la data dell'attività:", datetime.now())
     giorni_settimana = ["L", "M", "M", "G", "V", "S", "D"]
@@ -148,7 +151,7 @@ elif st.session_state.page == "prenota":
     stato_attuale = res_singolo.iloc[0]['tecnico'] if not res_singolo.empty else ""
     
     if stato_attuale == "" or pd.isna(stato_attuale):
-        st.success("✅ IL MEZZO RISULTA DISPONIBILE")
+        st.success("✅ QUESTO MEZZO È LIBERO")
         nome_pren = st.text_input("Scrivi il tuo nome per prenotarlo (Testo Libero):")
         if st.button("Registra Prenotazione sul Cloud"):
             if nome_pren:
@@ -183,7 +186,8 @@ elif st.session_state.page == "dashboard":
         
     df_db = query_mese_cloud(f"{mese_nome}_{anno}", giorni_lista)
     
-    veicoli_da_mostrare = [v for v in mezzi_prenotabili if ditta_sel == "Tutte le ditte" or any(item["mezzo"] == v for item in fleet_db[ditta_sel])]
+    # Filtra le colonne mostrando solo le targhe dei mezzi legati alla ditta selezionata
+    veicoli_da_mostrare = [v for v in mezzi_prenotabili if ditta_sel == "Tutte le ditte" or any(v in item["mezzo"] for item in fleet_db[ditta_sel])]
     df_filtrato = df_db[veicoli_da_mostrare]
     
     st.info("💡 Fai doppio click su una cella per scrivere. Quando clicchi fuori, il dato si sincronizza online per tutti.")
