@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 import calendar
 from datetime import datetime
-from sqlalchemy import text  # <-- Questa è la libreria di sicurezza che mancava!
+from sqlalchemy import text
 
 # Configurazione della pagina web
-st.set_page_config(page_title="Formenti Fleet Cloud System", layout="wide", page_icon="🚐")
+st.set_page_config(page_title="Formenti Fleet Cloud System", layout="wide", page_icon="Vans")
 
-# --- 1. DATABASE STRUTTURA FLOTTA E ASSEGNATARI ---
+# --- 1. DATABASE COMPLETO "A MAGAZZINO" (Tenuto per sviluppi futuri: bolli, assicurazioni, ecc.) ---
 fleet_db = {
     "FORN. IND.LI FORMENTI SRL": [
         {"mezzo": "BMW 650 - EP700LY", "assegnato": "SIG. FORMENTI"},
         {"mezzo": "FIORINO - FF362CP", "assegnato": "FIORINO MAGAZZINO"},
         {"mezzo": "CLIO - GG880SN", "assegnato": "CUNEGO"},
-        {"mezzo": "CLIO - GW074FB", "assegnato": "CLIO HYBRID NUOVA JOLLY"},
+        {"mezzo": "CLIO - GW074FB", "assegnato": "SIG. FORMENTI (EX JOLLY)"},
         {"mezzo": "DAILY - FZ861EH", "assegnato": "SIMONE MORENO MICHELE"},
         {"mezzo": "CLIO - GL229DJ", "assegnato": "CLIO HYBRID - PENNER"},
         {"mezzo": "CLIO - FL906PG", "assegnato": "TROLESE"},
@@ -43,23 +43,21 @@ fleet_db = {
     ]
 }
 
-def get_all_vehicles():
-    lista = []
-    for ditta in fleet_db:
-        for item in fleet_db[ditta]:
-            lista.append(item["mezzo"])
-    return lista
+# --- 🎯 FILTRO ATTIVO: SOLO I MEZZI PRENOTABILI IN QUESTO MOMENTO ---
+mezzi_prenotabili = [
+    "FIORINO - FF362CP",
+    "PEUGEOT 208 - FF599PR",
+    "CLIO - GW074FB"
+]
 
-tutti_i_veicoli = get_all_vehicles()
-
-# --- 2. CONNESSIONE AL DATABASE CLOUD (POSTGRESQL VIA ST.CONNECTION) ---
+# --- 2. CONNESSIONE AL DATABASE CLOUD ---
 try:
     conn = st.connection("sql")
 except Exception as e:
     st.error("⚠️ Errore di configurazione del Database Cloud!")
     st.stop()
 
-# Creazione automatica della tabella sul Cloud se non esiste (Con protezione text())
+# Creazione tabella prenotazioni se non esiste
 with conn.session as session:
     session.execute(text("""
     CREATE TABLE IF NOT EXISTS prenotazioni (
@@ -72,9 +70,9 @@ with conn.session as session:
     """))
     session.commit()
 
-# Funzione per caricare i dati dal database cloud
+# Funzione per caricare i dati filtrati dal database cloud
 def query_mese_cloud(chiave_mese, giorni_lista):
-    df = pd.DataFrame("", index=giorni_lista, columns=tutti_i_veicoli)
+    df = pd.DataFrame("", index=giorni_lista, columns=mezzi_prenotabili)
     try:
         res = conn.query("SELECT riga_giorno, mezzo, tecnico FROM prenotazioni WHERE chiave_mese = :mese", params={"mese": chiave_mese})
         if not res.empty:
@@ -93,8 +91,8 @@ if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5")
-    st.subheader("Database Cloud Online 24/7. Seleziona la modalità d'accesso:")
+    st.title("🚐 Formenti Fleet Cloud System v5.1")
+    st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📱 INTERFACCIA SMARTPHONE\n(Controllo Rapido e Prenotazione)", use_container_width=True): nav_to("prenota"); st.rerun()
@@ -103,11 +101,22 @@ if st.session_state.page == "home":
 
 elif st.session_state.page == "prenota":
     if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
-    st.title("📱 Controllo Rapido e Prenotazione Mezzo")
+    st.title("📱 Controllo Rapido e Prenotazione")
     
-    veicolo_sel = st.selectbox("Scegli l'automezzo:", tutti_i_veicoli)
-    assegnatario = next(item["assegnato"] for ditta in fleet_db for item in fleet_db[ditta] if item["mezzo"] == veicolo_sel)
-    st.warning(f"👤 **Utilizzatore Abituale:** {assegnatario}")
+    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili)
+    
+    # Recupera dinamicamente Proprietario (Azienda) e Assegnatario dal database completo
+    proprietario_azienda = "Non specificato"
+    utilizzatore_abituale = "Non specificato"
+    for ditta, lista_mezzi in fleet_db.items():
+        for m in lista_mezzi:
+            if m["mezzo"] == veicolo_sel:
+                proprietario_azienda = ditta
+                utilizzatore_abituale = m["assegnato"]
+                
+    # Visualizzazione chiara dei dettagli di identificazione richiesti
+    st.warning(f"🏢 **Proprietario (Azienda):** {proprietario_azienda}")
+    st.info(f"👤 **Utilizzatore Abituale:** {utilizzatore_abituale}")
     
     data_sel = st.date_input("Seleziona la data dell'attività:", datetime.now())
     giorni_settimana = ["L", "M", "M", "G", "V", "S", "D"]
@@ -152,11 +161,13 @@ elif st.session_state.page == "dashboard":
     giorni_settimana = ["L", "M", "M", "G", "V", "S", "D"]
     giorni_lista = []
     for i in range(1, num_giorni + 1):
-        sigla = giorni_settimana[calendar.weekday(anno, m_idx, i)]
+        sigla =超 giorni_settimana[calendar.weekday(anno, m_idx, i)]
         giorni_lista.append(f"{i:02d}/{m_idx:02d} (🔴 DOM)" if sigla == "D" else f"{i:02d}/{m_idx:02d} ({sigla})")
         
     df_db = query_mese_cloud(f"{mese_nome}_{anno}", giorni_lista)
-    veicoli_da_mostrare = tutti_i_veicoli if ditta_sel == "Tutte le ditte" else [i["mezzo"] for i in fleet_db[ditta_sel]]
+    
+    # Mostra solo i mezzi prenotabili filtrati eventualmente per ditta
+    veicoli_da_mostrare = [v for v in mezzi_prenotabili if ditta_sel == "Tutte le ditte" or any(item["mezzo"] == v for item in fleet_db[ditta_sel])]
     df_filtrato = df_db[veicoli_da_mostrare]
     
     st.info("💡 Fai doppio click su una cella per scrivere. Quando clicchi fuori, il dato si sincronizza online per tutti.")
