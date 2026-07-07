@@ -85,13 +85,16 @@ def query_mese_cloud(chiave_mese, giorni_lista):
         pass
     return df
 
-# --- 🎨 FUNZIONE DI COLORAZIONE RIGHE PER IL FINE SETTIMANA ---
-def colora_fine_settimana(row):
-    if "DOM" in row.name:
-        return ['background-color: #ffcccc; color: #000000'] * len(row)  # Rosso pastello leggero
-    elif "(S)" in row.name:
-        return ['background-color: #ffe6cc; color: #000000'] * len(row)  # Arancione pastello leggero
-    return [''] * len(row)
+# --- 🎨 FUNZIONE DI FORMATTAZIONE RIGHE PER IL FINE SETTIMANA ---
+def applica_colore_celle(df_input):
+    # Genera una tabella di stili della stessa dimensione del DF originale
+    df_style = pd.DataFrame('', index=df_input.index, columns=df_input.columns)
+    for index_row in df_input.index:
+        if "DOM" in index_row:
+            df_style.loc[index_row] = 'background-color: #ffcccc; color: #000000; font-weight: bold;'
+        elif "(S)" in index_row:
+            df_style.loc[index_row] = 'background-color: #ffe6cc; color: #000000;'
+    return df_style
 
 # --- 🛰️ PARSER URL PER QR CODE ---
 default_index = 0
@@ -110,7 +113,7 @@ if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5.6")
+    st.title("🚐 Formenti Fleet Cloud System v5.7")
     st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
@@ -193,8 +196,8 @@ elif st.session_state.page == "dashboard":
     
     st.info("💡 Fai doppio click su una cella per scrivere. Quando clicchi fuori, il dato si sincronizza online per tutti.")
     
-    # 🎨 Applicazione dello stile grafico e del reset della chiave del widget (risolve il blocco del cambio mese)
-    df_styled = df_filtrato.style.apply(colora_fine_settimana, axis=1)
+    # 🎨 NUOVA LOGICA DI STYLE: Applica il colore alle celle del data_editor in modo nativo e blindato
+    df_styled = df_filtrato.style.apply(applica_colore_celle, axis=None)
     df_edit = st.data_editor(df_styled, use_container_width=True, height=550, key=f"editor_{mese_nome}_{anno}_{ditta_sel}")
     
     if not df_edit.equals(df_filtrato):
