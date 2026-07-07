@@ -3,6 +3,9 @@ import pandas as pd
 import calendar
 from datetime import datetime, date
 from sqlalchemy import text
+import io
+import base64
+from PIL import Image  # Per la compressione di sicurezza dell'immagine
 
 # Configurazione della pagina web
 st.set_page_config(page_title="Formenti Fleet Cloud System", layout="wide", page_icon="Vans")
@@ -64,7 +67,7 @@ except Exception as e:
     st.error("⚠️ Errore di configurazione del Database Cloud!")
     st.stop()
 
-# Inizializzazione Tabelle Cloud
+# Inizializzazione Tabelle Cloud (Inclusa tabella storico per le foto)
 with conn.session as session:
     session.execute(text("""
     CREATE TABLE IF NOT EXISTS prenotazioni (
@@ -84,7 +87,15 @@ with conn.session as session:
         data_ultimo_agg_km DATE
     );
     """))
-    # Inserimento automatico mezzi mancanti
+    session.execute(text("""
+    CREATE TABLE IF NOT EXISTS storico_foto_cruscotto (
+        mezzo VARCHAR(100),
+        chiave_mese_anno VARCHAR(50),
+        km_registrati INT,
+        foto_base64 TEXT,
+        PRIMARY KEY (mezzo, chiave_mese_anno)
+    );
+    """))
     for m in tutti_i_mezzi:
         session.execute(text("INSERT INTO scadenze_flotta (mezzo) VALUES (:mezzo) ON CONFLICT (mezzo) DO NOTHING"), {"mezzo": m})
     session.commit()
@@ -103,32 +114,36 @@ def query_mese_cloud(chiave_mese, giorni_lista):
     except Exception: pass
     return df
 
-def applica_colore_celle(df_input):
+def applica_colore_cells(df_input):
     df_style = pd.DataFrame('', index=df_input.index, columns=df_input.columns)
     for index_row in df_input.index:
         if "DOM" in index_row: df_style.loc[index_row] = 'background-color: #ffcccc; color: #000000; font-weight: bold;'
         elif "(S)" in index_row: df_style.loc[index_row] = 'background-color: #ffe6cc; color: #000000;'
     return df_style
 
-# --- 🛰️ PARSER URL QR CODE ---
-default_index = 0
+# --- 🛰️ PARSER URL AVANZATO: RILEVA SE È UN CONDUCENTE CHE AGGIORNA I KM ---
+default_index_pren = 0
 if "mezzo" in st.query_params:
-    param_mezzo = st.query_params["mezzo"].upper()
+    param_m = st.query_params["mezzo"].upper()
     if "page_redirected" not in st.session_state:
         st.session_state.page = "prenota"
-        st.session_state.page_redirected = True
-    if "FF362CP" in param_mezzo: default_index = 0
-    elif "FF599PR" in param_mezzo: default_index = 1
-    elif "GW074FB" in param_mezzo: default_index = 2
+        st.session_state.st_redir = True
+    if "FF362CP" in param_m: default_index_pren = 0
+    elif "FF599PR" in param_m: default_index_pren = 1
+    elif "GW074FB" in param_m: default_index_pren = 2
+
+# Rilevamento link dedicato inserimento KM (es. ?km=FF362CP)
+if "km" in st.query_params:
+    st.session_state.page = "inserimento_km_conducente"
+    st.session_state.targa_km_target = st.query_params["km"].upper()
 
 # --- 3. NAVIGAZIONE PAGINE ---
 if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("Hub Formenti Fleet Cloud System v6.0")
+    st.title("Hub Formenti Fleet Cloud System v6.5")
     st.subheader("Seleziona la sezione di lavoro:")
-    
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("📱 INTERFACCIA SMARTPHONE\n(Prenotazione Rapida)", use_container_width=True): nav_to("prenota"); st.rerun()
@@ -138,12 +153,9 @@ if st.session_state.page == "home":
         if st.button("🔧 GESTIONE SCADENZE & KM\n(Alert e Monitoraggio Flotta)", use_container_width=True): nav_to("scadenze"); st.rerun()
 
 elif st.session_state.page == "prenota":
-    if st.button("⬅️ Torna al Menu Principale"): 
-        if "page_redirected" in st.session_state: del st.session_state["page_redirected"]
-        st.query_params.clear()
-        nav_to("home"); st.rerun()
+    if st.button("⬅️ Torna al Menu Principale"): st.query_params.clear(); nav_to("home"); st.rerun()
     st.title("📱 Controllo Rapido e Prenotazione")
-    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili, index=default_index)
+    veicolo_sel = st.selectbox("Scegli l'automezzo da prenotare:", mezzi_prenotabili, index=default_index_pren)
     
     proprietario_azienda = "Non specificato"
     utilizzatore_abituale = "Non specificato"
@@ -217,25 +229,100 @@ elif st.session_state.page == "dashboard":
             session.commit()
         st.success("💾 Cloud aggiornato con successo!"); st.rerun()
 
-# --- 🔧 NUOVA PAGINA GESTIONE SCADENZE & KM ---
-elif st.session_state.page == "scadenze":
-    if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
-    st.title("🔧 Monitoraggio Scadenze e Chilometraggi Flotta")
+# --- 📱📱📱 NUOVA INTERFACCIA DEDICATA INSERIMENTO KM CONDUCENTE (SBLOCCATA DA QR) ---
+elif st.session_state.page == "inserimento_km_conducente":
+    targa_target = st.session_state.get("targa_km_target", "")
     
-    # 1. Recupero Dati Scadenze dal Cloud
-    res_scadenze = conn.query("SELECT * FROM scadenze_flotta", ttl=0)
-    
-    # Mappatura Referenti fissi/condivisi
-    mappa_referenti = {}
+    # Cerca il mezzo corrispondente nei 26 totali
+    mezzo_completo_selezionato = None
+    referente_rilevato = "Non specificato"
     for ditta, mezzi in fleet_db.items():
         for m in mezzi:
-            mappa_referenti[m["mezzo"]] = m["assegnato"]
+            if targa_target in m["mezzo"]:
+                mezzo_completo_selezionato = m["mezzo"]
+                referente_rilevato = m["assegnato"]
+                
+    if not mezzo_completo_selezionato:
+        st.error(f"⚠️ Errore: La targa '{targa_target}' non corrisponde a nessun veicolo in anagrafica Formenti.")
+        if st.button("Vai alla Home"): st.query_params.clear(); nav_to("home"); st.rerun()
+        st.stop()
+        
+    st.title(f"🚐 Registrazione KM Mensile")
+    st.subheader(f"Mezzo: {mezzo_completo_selezionato}")
+    st.info(f"👤 **Referente/Utilizzatore Abituale:** {referente_rilevato}")
+    
+    # Carica l'ultimo chilometraggio salvato
+    res_last = conn.query("SELECT km_attuali FROM scadenze_flotta WHERE mezzo = :m", params={"m": mezzo_completo_selezionato}, ttl=0)
+    km_precedenti = int(res_last.iloc[0]['km_attuali']) if not res_last.empty else 0
+    st.metric(label="Chilometri registrati l'ultimo mese:", value=f"{km_precedenti:,} KM")
+    
+    st.markdown("---")
+    
+    # INPUT 1: I Chilometri (Obbligatoriamente superiori ai precedenti)
+    km_inseriti = st.number_input("Inserisci i Chilometri attuali segnati sul cruscotto:", min_value=km_precedenti, step=1, value=km_precedenti)
+    
+    # INPUT 2: La Foto (Mandatoria per sbloccare il bottone)
+    st.markdown("#### 📸 Foto del Cruscotto (Obbligatoria)")
+    file_foto = st.file_uploader("Scatta una foto del contachilometri o caricala dalla galleria:", type=["jpg", "jpeg", "png"])
+    
+    if file_foto is not None:
+        st.success("✅ Foto caricata correttamente. Elaborazione e compressione in corso...")
+        
+        # LOGICA DI COMPRESSIONE: Riduce l'immagine a 800px max per risparmiare spazio sul database Neon
+        img = Image.open(file_foto)
+        if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+        img.thumbnail((800, 800))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=65)  # Qualità 65% per file leggerissimo (~40KB) ma nitido
+        foto_base64_string = base64.b64encode(buffer.getvalue()).decode()
+        
+        st.image(buffer.getvalue(), caption="Anteprima della foto che verrà salvata", width=300)
+        
+        # Abilita il salvataggio se i km sono aumentati (o uguali se fermo, ma veritieri)
+        if st.button("Invia dati e foto in Direzione", use_container_width=True):
+            oggi = date.today()
+            mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
+            chiave_mese_anno = f"{mesi_ita[oggi.month - 1]}_{oggi.year}"
             
-    # 2. SEZIONE ALERT CRITICI (Generati dinamicamente)
-    st.subheader("🚨 Pannello Alert Attivi")
+            with conn.session as session:
+                # 1. Aggiorna lo stato attuale
+                session.execute(text("""
+                    UPDATE scadenze_flotta 
+                    SET km_attuali = :km, data_ultimo_agg_km = :oggi 
+                    WHERE mezzo = :mezzo
+                """), {"km": km_inseriti, "oggi": oggi, "mezzo": mezzo_completo_selezionato})
+                
+                # 2. Salva la foto nello storico mensile (sovrascrive se reinviata nello stesso mese)
+                session.execute(text("""
+                    INSERT INTO storico_foto_cruscotto (mezzo, chiave_mese_anno, km_registrati, foto_base64)
+                    VALUES (:mezzo, :chiave, :km, :foto)
+                    ON CONFLICT (mezzo, chiave_mese_anno) 
+                    DO UPDATE SET km_registrati = :km, foto_base64 = :foto
+                """), {"mezzo": mezzo_completo_selezionato, "chiave": chiave_mese_anno, "km": km_inseriti, "foto": foto_base64_string})
+                
+                session.commit()
+                
+            st.success("🎉 Perfetto! I chilometri e la foto sono stati registrati sul Cloud Formenti.")
+            st.balloons()
+            st.info("Puoi chiudere questa pagina internet del telefono.")
+    else:
+        st.warning("🔒 Per salvare i dati devi prima scattare e caricare la foto del cruscotto.")
+
+# --- 🔧 PAGINA CENTRALIZZATA SCADENZE & ALERT UFFICIO ---
+elif st.session_state.page == "scadenze":
+    if st.button("⬅️ Torna al Menu Principale"): nav_to("home"); st.rerun()
+    st.title("🔧 Monitoraggio Scadenze, Chilometraggi e Foto")
+    
+    res_scadenze = conn.query("SELECT * FROM scadenze_flotta", ttl=0)
+    mappa_referenti = {}
+    for ditta, mezzi in fleet_db.items():
+        for m in mezzi: mappa_referenti[m["mezzo"]] = m["assegnato"]
+            
+    st.subheader("🚨 Pannello Alert Meccanici / Assicurativi")
     oggi = date.today()
     alert_generati = 0
     
+    # Alert standard (Tagliandi e Assicurazioni)
     if not res_scadenze.empty:
         for _, row in res_scadenze.iterrows():
             mezzo = row['mezzo']
@@ -244,57 +331,76 @@ elif st.session_state.page == "scadenze":
             scad_ass = row['scadenza_assicurazione']
             referente = mappa_referenti.get(mezzo, "Non specificato")
             
-            # Controllo alert Tagliando KM
             if km_tagl > 0 and (km_tagl - km_att) <= 1500:
-                st.error(f"🔧 **TAGLIANDO SCADUTO O IMMINENTE** su **{mezzo}** | KM Attuali: {km_att} / Scadenza impostata: {km_tagl} KM. \n👤 *Referente:* {referente} (Controllare urgente!)")
+                st.error(f"🔧 **TAGLIANDO RICHIESTO** su **{mezzo}** | KM Attuali: {km_att:,} / Soglia: {km_tagl:,} KM. \n👤 *Referente:* {referente}")
                 alert_generati += 1
-                
-            # Controllo alert Assicurazione Data
             if scad_ass:
                 giorni_mancanti = (scad_ass - oggi).days
                 if giorni_mancanti <= 30:
                     st.warning(f"📄 **ASSICURAZIONE IN SCADENZA** su **{mezzo}** | Scade il {scad_ass.strftime('%d/%m/%Y')} (Mancano {giorni_mancanti} giorni). \n👤 *Referente:* {referente}")
                     alert_generati += 1
                     
-    if alert_generati == 0:
-        st.success("✅ Nessun alert attivo. Tutta la flotta è in regola con tagliandi e assicurazioni!")
+    # 🚨 NUOVO ALERT: CONTROLLO RITARDI INSERIMENTO KM FINE MESE
+    st.subheader("⚠️ Registrazioni KM Mancanti Questo Mese")
+    mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
+    nome_mese_corrente = mesi_ita[oggi.month - 1]
+    
+    mancanti_count = 0
+    col_manc_1, col_manc_2 = st.columns(2)
+    with col_manc_1:
+        if not res_scadenze.empty:
+            for _, row in res_scadenze.iterrows():
+                mezzo = row['mezzo']
+                dt_agg = row['data_ultimo_agg_km']
+                referente = mappa_referenti.get(mezzo, "Non specificato")
+                
+                # Se non ha mai aggiornato o l'ultimo aggiornamento non è del mese/anno corrente
+                if dt_agg is None or dt_agg.month != oggi.month or dt_agg.year != oggi.year:
+                    st.write(f"❌ **{mezzo}** | Referente: `{referente}` (Nessun dato per {nome_mese_corrente})")
+                    mancanti_count += 1
+        if mancanti_count == 0: st.success(f"✅ Splendido! Tutti i referenti hanno inserito i KM di {nome_mese_corrente}.")
+
+    st.markdown("---")
+    
+    # 📸 NUOVO STRUMENTO: VERIFICA VISIVA DELLE FOTO CARICATE DAI TECNICI
+    st.subheader("📸 Archivio e Verifica Foto Contachilometri")
+    mezzo_foto_sel = st.selectbox("Seleziona il veicolo di cui vuoi controllare la prova fotografica:", tutti_i_mezzi)
+    chiave_mese_foto = st.selectbox("Seleziona il mese da verificare:", [f"{m}_{oggi.year}" for m in mesi_ita], index=oggi.month-1)
+    
+    res_foto = conn.query("SELECT km_registrati, foto_base64 FROM storico_foto_cruscotto WHERE mezzo = :m AND chiave_mese_anno = :c", 
+                          params={"m": mezzo_foto_sel, "c": chiave_mese_foto}, ttl=0)
+    
+    if not res_foto.empty:
+        km_f = res_foto.iloc[0]['km_registrati']
+        blob_f = res_foto.iloc[0]['foto_base64']
+        st.success(f"📸 Foto trovata! KM dichiarati dal tecnico in questa sessione: **{km_f:,} KM**")
+        st.image(base64.b64decode(blob_f), caption=f"Cruscotto ufficiale {mezzo_foto_sel} - {chiave_mese_foto}", width=450)
+    else:
+        st.info(f"⚪ Nessuna foto caricata per {mezzo_foto_sel} nel mese di {chiave_mese_foto}.")
         
     st.markdown("---")
     
-    # 3. PANNELLO DI AGGIORNAMENTO EXCEL-STYLE PER TUTTI I MEZZI
-    st.subheader("📊 Registro Mensile Flotta Completo")
-    st.info("💡 Tabellone editabile: Scrivi i KM aggiornati (es. il 1° del mese) o modifica le scadenze. Al termine clicca fuori dalla tabella per salvare.")
-    
-    # Costruiamo il DataFrame di lavoro ordinato per ditta
+    # Tabellone generale editabile dall'ufficio
+    st.subheader("📊 Registro Storico e Soglie (PC Ufficio)")
     righe_tabella = []
     for ditta, mezzi in fleet_db.items():
         for m in mezzi:
             m_nome = m["mezzo"]
             ref = m["assegnato"]
-            
-            # Cerca i dati del database cloud per questo mezzo
-            db_row = res_scadenze[res_scadenze['mezzo'] == m_nome]
+            db_row = res_scadenze[res_scadenze['mezzo'] == m_nome] if not res_scadenze.empty else pd.DataFrame()
             if not db_row.empty:
                 km_a = int(db_row.iloc[0]['km_attuali'])
                 km_t = int(db_row.iloc[0]['km_prossimo_tagliando'])
                 scad = db_row.iloc[0]['scadenza_assicurazione']
                 data_agg = db_row.iloc[0]['data_ultimo_agg_km']
-            else:
-                km_a, km_t, scad, data_agg = 0, 0, date(2026, 12, 31), None
+            else: km_a, km_t, scad, data_agg = 0, 0, date(2026, 12, 31), None
                 
             righe_tabella.append({
-                "Società": ditta,
-                "Automezzo": m_nome,
-                "Referente / Utilizzo": ref,
-                "KM Attuali": km_a,
-                "Soglia Tagliando (KM)": km_t,
-                "Scadenza Assicurazione": scad,
-                "Ultimo Aggiornamento": data_agg
+                "Società": ditta, "Automezzo": m_nome, "Referente / Utilizzo": ref,
+                "KM Attuali": km_a, "Soglia Tagliando (KM)": km_t, "Scadenza Assicurazione": scad, "Ultimo Aggiornamento": data_agg
             })
             
     df_scadenze_visualizza = pd.DataFrame(righe_tabella)
-    
-    # Configurazione colonne per l'editor nativo
     df_edit_scadenze = st.data_editor(
         df_scadenze_visualizza,
         disabled=["Società", "Automezzo", "Referente / Utilizzo", "Ultimo Aggiornamento"],
@@ -303,12 +409,9 @@ elif st.session_state.page == "scadenze":
             "Soglia Tagliando (KM)": st.column_config.NumberColumn(format="%d"),
             "Scadenza Assicurazione": st.column_config.DateColumn(format="DD/MM/YYYY")
         },
-        use_container_width=True,
-        height=500,
-        key="editor_scadenze_globali"
+        use_container_width=True, height=400, key="editor_scadenze_globali"
     )
     
-    # Rilevamento modifiche e salvataggio sul database cloud
     if not df_edit_scadenze.equals(df_scadenze_visualizza):
         with conn.session as session:
             for i in range(len(df_edit_scadenze)):
@@ -316,20 +419,13 @@ elif st.session_state.page == "scadenze":
                 km_att_nuovo = int(df_edit_scadenze.at[i, "KM Attuali"])
                 km_tag_nuovo = int(df_edit_scadenze.at[i, "Soglia Tagliando (KM)"])
                 scad_nuova = df_edit_scadenze.at[i, "Scadenza Assicurazione"]
-                
-                # Rileva se sono cambiati i KM per aggiornare il timestamp
                 km_vecchio = int(df_scadenze_visualizza.at[i, "KM Attuali"])
                 data_agg_nuova = oggi if km_att_nuovo != km_vecchio else df_scadenze_visualizza.at[i, "Ultimo Aggiornamento"]
                 
                 session.execute(text("""
                     UPDATE scadenze_flotta 
-                    SET km_attuali = :km_a, km_prossimo_tagliando = :km_t, 
-                        scadenza_assicurazione = :scad, data_ultimo_agg_km = :dt_agg
+                    SET km_attuali = :km_a, km_prossimo_tagliando = :km_t, scadenza_assicurazione = :scad, data_ultimo_agg_km = :dt_agg
                     WHERE mezzo = :mezzo
-                """), {
-                    "km_a": km_att_nuovo, "km_t": km_tag_nuovo, 
-                    "scad": scad_nuova, "dt_agg": data_agg_nuova, "mezzo": mezzo_nome
-                })
+                """), {"km_a": km_att_nuovo, "km_t": km_tag_nuovo, "scad": scad_nuova, "dt_agg": data_agg_nuova, "mezzo": mezzo_nome})
             session.commit()
-        st.success("💾 Scadenze e Chilometraggi aggiornati online con successo!")
-        st.rerun()
+        st.success("💾 Database aggiornato con successo!"); st.rerun()
