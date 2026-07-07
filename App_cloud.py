@@ -43,7 +43,7 @@ fleet_db = {
     ]
 }
 
-# --- 🎯 FILTRO ATTIVO: VISUALIZZAZIONE COMPLETA RIPRISTINATA ---
+# --- 🎯 FILTRO ATTIVO ---
 mezzi_prenotabili = [
     "FIORINO - FF362CP",
     "PEUGEOT 208 - FF599PR",
@@ -85,15 +85,22 @@ def query_mese_cloud(chiave_mese, giorni_lista):
         pass
     return df
 
-# --- 🛰️ PARSER URL INTELLIGENTE: ORA AGGANCIA LA TARGA SPECIFICA ---
+# --- 🎨 FUNZIONE DI COLORAZIONE RIGHE PER IL FINE SETTIMANA ---
+def colora_fine_settimana(row):
+    if "DOM" in row.name:
+        return ['background-color: #ffcccc; color: #000000'] * len(row)  # Rosso pastello leggero
+    elif "(S)" in row.name:
+        return ['background-color: #ffe6cc; color: #000000'] * len(row)  # Arancione pastello leggero
+    return [''] * len(row)
+
+# --- 🛰️ PARSER URL PER QR CODE ---
 default_index = 0
 if "mezzo" in st.query_params:
-    param_mezzo = st.query_params["mezzo"].upper() # Converte in maiuscolo per evitare errori (es: ff362cp -> FF362CP)
+    param_mezzo = st.query_params["mezzo"].upper()
     if "page_redirected" not in st.session_state:
         st.session_state.page = "prenota"
         st.session_state.page_redirected = True
     
-    # Riconoscimento futuro-sicuro basato sulla targa esatta
     if "FF362CP" in param_mezzo: default_index = 0
     elif "FF599PR" in param_mezzo: default_index = 1
     elif "GW074FB" in param_mezzo: default_index = 2
@@ -103,7 +110,7 @@ if "page" not in st.session_state: st.session_state.page = "home"
 def nav_to(page_name): st.session_state.page = page_name
 
 if st.session_state.page == "home":
-    st.title("🚐 Formenti Fleet Cloud System v5.5")
+    st.title("🚐 Formenti Fleet Cloud System v5.6")
     st.subheader("Seleziona la modalità d'accesso:")
     col1, col2 = st.columns(2)
     with col1:
@@ -185,7 +192,10 @@ elif st.session_state.page == "dashboard":
     df_filtrato = df_db[veicoli_da_mostrare]
     
     st.info("💡 Fai doppio click su una cella per scrivere. Quando clicchi fuori, il dato si sincronizza online per tutti.")
-    df_edit = st.data_editor(df_filtrato, use_container_width=True, height=550)
+    
+    # 🎨 Applicazione dello stile grafico e del reset della chiave del widget (risolve il blocco del cambio mese)
+    df_styled = df_filtrato.style.apply(colora_fine_settimana, axis=1)
+    df_edit = st.data_editor(df_styled, use_container_width=True, height=550, key=f"editor_{mese_nome}_{anno}_{ditta_sel}")
     
     if not df_edit.equals(df_filtrato):
         with conn.session as session:
